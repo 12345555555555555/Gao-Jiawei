@@ -46,7 +46,12 @@ def run_solver():
         conn.commit()
         conn.close()
 
-        return jsonify({"status": "success", "groups": groups, "db_name": db_name})
+        return jsonify({
+    "status": "success",
+    "db_name": db_name,
+    "selected": samples,
+    "groups": groups
+})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 

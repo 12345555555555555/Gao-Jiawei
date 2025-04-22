@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>Optimal Samples Selection System</title>
   <style>
     body {
@@ -80,30 +80,12 @@
     <h2>An Optimal Samples Selection System</h2>
 
     <div class="form-row">
-      <div class="form-group">
-        <label>m (45–54)</label>
-        <input id="m" type="number" value="45">
-      </div>
-      <div class="form-group">
-        <label>n (7–25)</label>
-        <input id="n" type="number" value="8">
-      </div>
-      <div class="form-group">
-        <label>k (4–7)</label>
-        <input id="k" type="number" value="6">
-      </div>
-      <div class="form-group">
-        <label>j (s–k)</label>
-        <input id="j" type="number" value="6">
-      </div>
-      <div class="form-group">
-        <label>s (3–7)</label>
-        <input id="s" type="number" value="5">
-      </div>
-      <div class="form-group">
-        <label>thresh</label>
-        <input id="thresh" type="number" value="1">
-      </div>
+      <div class="form-group"><label>m (45–54)</label><input id="m" type="number" value="45"></div>
+      <div class="form-group"><label>n (7–25)</label><input id="n" type="number" value="8"></div>
+      <div class="form-group"><label>k (4–7)</label><input id="k" type="number" value="6"></div>
+      <div class="form-group"><label>j (s–k)</label><input id="j" type="number" value="6"></div>
+      <div class="form-group"><label>s (3–7)</label><input id="s" type="number" value="5"></div>
+      <div class="form-group"><label>thresh</label><input id="thresh" type="number" value="1"></div>
     </div>
 
     <div class="radio-group">
@@ -113,15 +95,13 @@
     </div>
 
     <div class="form-row">
-      <div class="form-group">
-        <label>Solve Method</label>
+      <div class="form-group"><label>Solve Method</label>
         <select id="method">
           <option value="greedy">Greedy</option>
-          <option value="exact">Exact (CP-SAT)</option>
+          <option value="exact" selected>Exact (CP-SAT)</option>
         </select>
       </div>
-      <div class="form-group">
-        <label>Time Limit (s)</label>
+      <div class="form-group"><label>Time Limit (s)</label>
         <input id="time_limit" type="number" value="60">
       </div>
     </div>
@@ -136,7 +116,7 @@
   <script>
     async function run() {
       const resultBox = document.getElementById("result");
-      resultBox.textContent = "⏳ Running...";
+      resultBox.innerHTML = "<span style='color:blue;'>⏳ Awaiting run...</span>";
 
       const body = {
         m: document.getElementById("m").value,
@@ -154,24 +134,39 @@
       if (body.mode === "random") delete body.samples;
 
       try {
-        const res = await fetch("http://localhost:5000/run", {
+        const res = await fetch("https://gao-jiawei.onrender.com/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
 
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
         const result = await res.json();
+
         if (result.status === "success") {
-          resultBox.innerHTML =
-            `✅ Run complete!\nSaved to file: ${result.db_name}\n\nGroups:\n` +
-            result.groups.map(g => `(${g.join(", ")})`).join("\n");
-        } else {
-          resultBox.textContent = `❌ Error: ${result.message}`;
+  const groupList = result.groups.map(g => `<li>(${g.map(n => n.toString().padStart(2, "0")).join(", ")})</li>`).join("");
+
+  const n_samples = result.selected || [];
+  const n_list = n_samples.length ? `[${n_samples.join(", ")}]` : "(not returned)";
+
+  resultBox.innerHTML = `
+    <div style="color:green;"><b>✅ Run complete!</b></div>
+    <div><b>Selected n samples:</b> ${n_list}</div>
+    <div>Saved to file: <code>${result.db_name}</code></div>
+    <div><b>Groups:</b></div>
+    <ul>${groupList}</ul>
+  `;
+} else {
+          resultBox.innerHTML = `<span style="color:red;">❌ Server error: ${result.message}</span>`;
         }
+
       } catch (e) {
-        resultBox.textContent = `❌ Request failed: ${e.message}`;
+        resultBox.innerHTML = `<span style="color:red;">❌ Request failed: ${e.message}</span>`;
       }
     }
+
+    // ✅ Make run() accessible from inline onclick
+    window.run = run;
   </script>
 </body>
 </html>
