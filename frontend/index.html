@@ -80,11 +80,11 @@
     <h2>An Optimal Samples Selection System</h2>
 
     <div class="form-row">
-      <div class="form-group"><label>m (45–54)</label><input id="m" type="number"></div>
-      <div class="form-group"><label>n (7–25)</label><input id="n" type="number"></div>
-      <div class="form-group"><label>k (4–7)</label><input id="k" type="number"></div>
-      <div class="form-group"><label>j (s–k)</label><input id="j" type="number"></div>
-      <div class="form-group"><label>s (3–7)</label><input id="s" type="number"></div>
+      <div class="form-group"><label>m (45~54)</label><input id="m" type="number"></div>
+      <div class="form-group"><label>n (7~25)</label><input id="n" type="number"></div>
+      <div class="form-group"><label>k (4~7)</label><input id="k" type="number"></div>
+      <div class="form-group"><label>j (s~k)</label><input id="j" type="number"></div>
+      <div class="form-group"><label>s (3~7)</label><input id="s" type="number"></div>
       <div class="form-group"><label>thresh</label><input id="thresh" type="number"></div>
     </div>
 
@@ -117,6 +117,7 @@
     async function run() {
       const resultBox = document.getElementById("result");
       resultBox.innerHTML = "<span style='color:blue;'>⏳ Awaiting run...</span>";
+      const startTime = performance.now();
 
       const body = {
         m: document.getElementById("m").value,
@@ -142,16 +143,19 @@
 
         if (!res.ok) throw new Error(`Server returned ${res.status}`);
         const result = await res.json();
+        const elapsed = ((performance.now() - startTime) / 1000).toFixed(3);
 
         if (result.status === "success") {
           const groupList = result.groups.map(g => `<li>(${g.map(n => n.toString().padStart(2, "0")).join(", ")})</li>`).join("");
-
-          const n_samples = result.selected || [];  // 支持后端返回 selected 字段
+          const n_samples = result.selected || [];
           const n_list = n_samples.length ? `[${n_samples.join(", ")}]` : "(not returned)";
+          const count = result.groups.length;
 
           resultBox.innerHTML = `
             <div style="color:green;"><b>✅ Run complete!</b></div>
             <div><b>Selected n samples:</b> ${n_list}</div>
+            <div><b>Time elapsed:</b> ${elapsed} s</div>
+            <div><b>Number of groups:</b> ${count}</div>
             <div>Saved to file: <code>${result.db_name}</code></div>
             <div><b>Groups:</b></div>
             <ul>${groupList}</ul>
@@ -165,7 +169,6 @@
       }
     }
 
-    // ✅ Make run() accessible from inline onclick
     window.run = run;
   </script>
 </body>
