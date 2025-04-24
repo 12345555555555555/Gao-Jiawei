@@ -70,35 +70,148 @@ class CoverProblem:
 # ---------------------------------------------------------
 # 贪心近似：log-factor guarantee
 # ---------------------------------------------------------
-def greedy_additive(prob: CoverProblem) -> Set[int]:
-    uncovered_count = [prob.th] * len(prob.J_masks)    # 每道 j 还差的 s‑子集数
-    selected: Set[int] = set()
+from typing import Set
+from math import exp
+from random import shuffle, choice, sample, random
+def greedy_additive(prob) -> Set[int]:
+    """多次重启 + 位掩码加速 + 最大增益贪心 + 修复步骤 + 局部删点 + 模拟退火"""
 
-    while True:
-        best_gain, best_k = 0, None
-        for k_idx in range(len(prob.K_masks)):
-            if k_idx in selected:
-                continue
-            # 新选此 k 可减少多少“未覆盖 s‑子集”数量
-            gain = sum(
-                min(prob.coverage[j][k_idx], uncovered_count[j])
-                for j in range(len(prob.J_masks))
-            )
-            if gain > best_gain:
-                best_gain, best_k = gain, k_idx
+    K = len(prob.K_masks)
+    J = len(prob.J_masks)
 
-        if best_gain == 0 or best_k is None:
-            break  # 再无改进
-        selected.add(best_k)
-        # 更新剩余缺口
-        for j in range(len(prob.J_masks)):
-            uncovered_count[j] = max(
-                0, uncovered_count[j] - prob.coverage[j][best_k]
-            )
-        # 全部满足？
-        if all(c == 0 for c in uncovered_count):
-            break
-    return selected
+    # 1. 预计算：K 组合的位掩码列表 & 每个 j 上各 s 子集的位掩码
+    k_bits_list = prob.K_masks[:]  # int mask
+    s_mask_list = [
+        [sum(1 << i for i in s_set) for s_set in prob.S_by_J_sets[j_idx]]
+        for j_idx in range(J)
+    ]
+
+    # 2. 计算 s_bitmask[j][k]：第 k 个组合在第 j 个需求上覆盖哪些 s 子集
+    s_bitmask = [[0]*K for _ in range(J)]
+    for j in range(J):
+        for s_idx, s_mask in enumerate(s_mask_list[j]):
+            for k in range(K):
+                if (k_bits_list[k] & s_mask) == s_mask:
+                    s_bitmask[j][k] |= 1 << s_idx
+
+    # 可行性检查
+    def is_feasible(sel: Set[int]) -> bool:
+        for j in range(J):
+            mask_acc = 0
+            for k in sel:
+                mask_acc |= s_bitmask[j][k]
+            if mask_acc.bit_count() < prob.th:
+                return False
+        return True
+
+    # 初解构造：最大增益贪心
+    def greedy_construct() -> Set[int]:
+        uncovered = [prob.th]*J
+        sel = set()
+        all_k = list(range(K))
+        while any(u > 0 for u in uncovered):
+            gains = []
+            for k in all_k:
+                if k in sel: continue
+                gain = sum(
+                    min(s_bitmask[j][k].bit_count(), uncovered[j])
+                    for j in range(J)
+                )
+                if gain:
+                    gains.append((gain, k))
+            if not gains:
+                break
+            max_gain = max(g for g,_ in gains)
+            best_ks = [k for g,k in gains if g == max_gain]
+            k_choice = choice(best_ks)
+            sel.add(k_choice)
+            for j in range(J):
+                uncovered[j] = max(0, uncovered[j] - s_bitmask[j][k_choice].bit_count())
+        return sel
+
+    # 修复步骤：保证初解可行
+    def repair(sel: Set[int]) -> Set[int]:
+        # 计算当前覆盖
+        covered = [0]*J
+        for j in range(J):
+            for k in sel:
+                covered[j] |= s_bitmask[j][k]
+        # 只保留每个 j 上实际子集位范围
+        masks_all = [(1 << len(s_mask_list[j])) - 1 for j in range(J)]
+
+        # 缺口：当 bit_count < th 时，需要继续添加
+        while True:
+            # 找出最缺的 j
+            deficits = [prob.th - covered[j].bit_count() for j in range(J)]
+            if all(d <= 0 for d in deficits):
+                break
+            # 计算每个 k 的修复增益
+            gains = []
+            for k in range(K):
+                if k in sel: continue
+                gain = 0
+                for j in range(J):
+                    if deficits[j] > 0:
+                        missing = (~covered[j] & masks_all[j])
+                        gain += (s_bitmask[j][k] & missing).bit_count()
+                if gain:
+                    gains.append((gain, k))
+            if not gains:
+                break
+            # 选最大的修复 k
+            k_add = max(gains)[1]
+            sel.add(k_add)
+            for j in range(J):
+                covered[j] |= s_bitmask[j][k_add]
+        return sel
+
+    # 冗余删点
+    def local_delete(sel: Set[int]) -> Set[int]:
+        for k in list(sel):
+            if is_feasible(sel - {k}):
+                sel.remove(k)
+        return sel
+
+    # 模拟退火 + 一换一
+    def annealing_search(sel: Set[int]) -> Set[int]:
+        best = current = sel.copy()
+        T = 5.0
+        for _ in range(200):
+            if len(current) <= 1:
+                break
+            # 随机去掉一个
+            k_out = choice(tuple(current))
+            trial = current - {k_out}
+            pool = list(set(range(K)) - trial)
+            shuffle(pool)
+            moved = False
+            for k_in in pool:
+                cand = trial | {k_in}
+                if is_feasible(cand):
+                    Δ = len(cand) - len(current)
+                    if Δ < 0 or random() < exp(-Δ/(T+1e-9)):
+                        current = cand
+                        if len(cand) < len(best):
+                            best = cand
+                        moved = True
+                        break
+            if not moved:
+                current = best.copy()
+            T *= 0.9
+        return best
+
+    best_sol = None
+    # 重启次数减为 5
+    for _ in range(5):
+        sol = greedy_construct()
+        sol = repair(sol)
+        sol = local_delete(sol)
+        sol = annealing_search(sol)
+        if best_sol is None or len(sol) < len(best_sol):
+            best_sol = sol
+
+    return best_sol
+
 
 
 def feasible_additive(sel: Set[int], prob: CoverProblem) -> bool:
