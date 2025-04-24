@@ -56,7 +56,11 @@ class CoverProblem:
         self.S_by_J: List[List[int]] = [
             submasks_of(j_mask, s, n) for j_mask in self.J_masks
         ]
-
+# ✅ 添加：每个 j‑组合的所有 s‑子集（用 Set[int] 表示）
+        self.S_by_J_sets: List[List[Set[int]]] = [
+            [{i for i in range(n) if (s_mask >> i) & 1} for s_mask in submasks_of(j_mask, s, n)]
+            for j_mask in self.J_masks
+        ]
         # 预计算 coverage[j][k] = k‑组合覆盖 j‑组合的 s‑子集数量
         self.coverage: List[List[int]] = []
         for j_idx, s_list in enumerate(self.S_by_J):
