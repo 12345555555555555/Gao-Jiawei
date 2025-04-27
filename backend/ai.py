@@ -231,11 +231,13 @@ def feasible_additive(sel: Set[int], prob: CoverProblem) -> bool:
 # OR‑Tools CP‑SAT 精确最优
 # ---------------------------------------------------------
 def exact_additive(prob: CoverProblem, time_limit: int = 60) -> Set[int]:
+    # ------------------ 新增：计时导入和建模 ------------------
+    import time
+    t0_build = time.time()
     try:
         from ortools.sat.python import cp_model
     except ImportError:
-        raise ImportError("未安装 OR‑Tools，请 `pip install ortools` 后重试")
-
+        raise ImportError("未安装 OR-Tools，请 `pip install ortools` 后重试")
     model = cp_model.CpModel()
     x = [model.NewBoolVar(f"x{k}") for k in range(len(prob.K_masks))]
 
@@ -258,15 +260,29 @@ def exact_additive(prob: CoverProblem, time_limit: int = 60) -> Set[int]:
 
     # 目标：最小化 k‑组合数量
     model.Minimize(sum(x))
+
+    # 建模结束
+    build_time = time.time() - t0_build
+
+    # 求解阶段
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
+    t0_solve = time.time()
     status = solver.Solve(model)
+    solve_time = time.time() - t0_solve
 
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        raise RuntimeError("CP‑SAT 未找到可行解，请增大时限或检查参数")
-
+    # 状态提示（可选）
+    if status == cp_model.FEASIBLE:
+        print("⚠️ Exact: time limit reached, returning best feasible solution")
+    elif status == cp_model.OPTIMAL:
+        print("✅ Exact: optimal found")
+    else:
+        raise RuntimeError(f"CP-SAT failed with status {solver.StatusName(status)}")
+ 
     chosen = {k for k in range(len(prob.K_masks)) if solver.Value(x[k])}
-    return chosen
+    # 返回 (组合索引集合, 建模耗时, 求解耗时)
+    return chosen, build_time, solve_time
+
 
 
 # ---------------------------------------------------------
