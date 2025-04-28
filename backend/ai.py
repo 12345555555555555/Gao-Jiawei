@@ -276,7 +276,13 @@ def exact_additive(prob: CoverProblem, time_limit: int = 60) -> Set[int]:
         print("⚠️ Exact: time limit reached, returning best feasible solution")
     elif status == cp_model.OPTIMAL:
         print("✅ Exact: optimal found")
+    elif status == cp_model.UNKNOWN:
+        # 超时且未找到任何可行解
+        print("❌ Exact: time limit reached, no feasible solution found")
+        # 直接返回空解
+        return set(), build_time, solve_time
     else:
+        # INFEASIBLE 之类的其他异常状态
         raise RuntimeError(f"CP-SAT failed with status {solver.StatusName(status)}")
  
     chosen = {k for k in range(len(prob.K_masks)) if solver.Value(x[k])}
