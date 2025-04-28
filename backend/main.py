@@ -46,13 +46,18 @@ def load_run(db_name):
     path = os.path.join(DB_DIR, db_name)
     conn = sqlite3.connect(path)
     c = conn.cursor()
+    # 取 samples
     c.execute("SELECT value FROM metadata WHERE key='samples'")
     samples = c.fetchone()[0].split(',')
+    # 取算法运行时间
+    c.execute("SELECT value FROM metadata WHERE key='alg_elapsed'")
+    alg_elapsed = float(c.fetchone()[0])
+    # 取结果组
     c.execute("SELECT samples FROM results ORDER BY group_id")
     rows = c.fetchall()
     conn.close()
     groups = [tuple(r[0].split(',')) for r in rows]
-    return samples, groups
+    return samples, groups, alg_elapsed
 
 # -------------------- GUI --------------------
 class Application(tk.Tk):
@@ -76,7 +81,7 @@ class Application(tk.Tk):
         param_frame = ttk.LabelFrame(self, text="Parameters & Run")
         param_frame.pack(fill='x', padx=15, pady=10)
         for i in range(14): param_frame.grid_columnconfigure(i, weight=1)
-        labels = ['m (45-54)', 'n (7-25)', 'k (4-7)', 'j (s-k)', 's (3-7)', 'threshold']
+        labels = ['m (45~54)', 'n (7~25)', 'k (4~7)', 'j (s~k)', 's (3~7)', 'threshold']
         self.entries = {}
         for idx, lbl in enumerate(labels):
             ttk.Label(param_frame, text=lbl).grid(row=0, column=2*idx, sticky='w', padx=5, pady=5)
@@ -162,47 +167,86 @@ class Application(tk.Tk):
             self.after(0, lambda: messagebox.showerror("Input Error", "Invalid parameters."))
             self.after(0, self._end_progress)
             return
+
         # Prepare samples
         if self.var_mode.get() == 'random':
             samples = random.sample(range(1, m+1), n)
         else:
             try:
                 samples = [int(x) for x in self.manual_ent.get().split(',')]
-                if len(samples) != n or any(x<1 or x>m for x in samples): raise ValueError
+                if len(samples) != n or any(x < 1 or x > m for x in samples):
+                    raise ValueError
             except ValueError:
-                self.after(0, lambda: messagebox.showerror("Input Error", "Manual input must be n values between 1 and m."))
+                self.after(0, lambda: messagebox.showerror(
+                    "Input Error", "Manual input must be n distinct values between 1 and m."))
                 self.after(0, self._end_progress)
                 return
+
         prob = CoverProblem(n, k, j, s, thresh)
         method = self.var_method.get()
-        start = time.time()
-        try:
-            if method == 'exact':
-                time_limit = int(self.time_ent.get())
-                chosen = exact_additive(prob, time_limit)
-            else:
+
+        # —— 精确算法：分别计时 build & solve —— 
+        if method == 'exact':
+            time_limit = int(self.time_ent.get())
+            try:
+                # exact_additive 现在返回 (chosen_set, build_time, solve_time)
+                chosen, build_t, solve_t = exact_additive(prob, time_limit)
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror("Solver Error", str(e)))
+                self.after(0, self._end_progress)
+                return
+
+            # 如果搜索阶段 hit time limit，则弹窗警告
+            if solve_t >= time_limit:
+                self.after(0, lambda: messagebox.showwarning(
+                    "Timeout",
+                    f"Exact search reached time limit {time_limit}s, returning best feasible solution."
+                ))
+        else:
+            # 贪心算法：build time 视为 0，只测 solve time
+            build_t = 0.0
+            solve_start = time.time()
+            try:
                 chosen = greedy_additive(prob)
-        except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Solver Error", str(e)))
-            self.after(0, self._end_progress)
-            return
-        elapsed = time.time() - start
-        # Convert groups
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror("Solver Error", str(e)))
+                self.after(0, self._end_progress)
+                return
+            solve_t = time.time() - solve_start
+
+        total_t = build_t + solve_t
+
+        # Convert chosen masks → actual sample numbers
         groups = []
         for idx in sorted(chosen):
-            nums = tuple(f"{samples[i]:02d}" for i in mask_to_combo(prob.K_masks[idx], n))
+            combo = mask_to_combo(prob.K_masks[idx], n)
+            nums = tuple(f"{samples[i]:02d}" for i in combo)
             groups.append(nums)
-        # Save
+
+        # Save run：传入 solve_t 作为“算法耗时”
         key = (m, n, k, j, s, method, thresh)
         self.run_counter[key] = self.run_counter.get(key, 0) + 1
-        db_name = save_run((m, n, k, j, s, method, thresh, self.run_counter[key]), samples, groups)
-        # UI update
+        db_name = save_run(
+            (m, n, k, j, s, method, thresh, self.run_counter[key]),
+            samples, groups,
+            solve_t
+        )
+
+        # UI 更新：同时显示 Model / Algo / Total 时间
         def finish():
-            self.time_label.config(text=f"Elapsed: {elapsed:.2f} s")
+            self.time_label.config(
+                text=(
+                    f"Model: {build_t:.2f}s   "
+                    f"Algo: {solve_t:.2f}s   "
+                    f"Total: {total_t:.2f}s"
+                )
+            )
             messagebox.showinfo("Success", f"Run saved as: {db_name}")
             self.refresh_runs()
             self._end_progress()
+
         self.after(0, finish)
+
 
     def _end_progress(self):
         self.progress.stop()
@@ -216,7 +260,8 @@ class Application(tk.Tk):
         sel = self.tree.selection()
         if not sel: return
         fname = self.tree.item(sel[0])['values'][0]
-        samples, groups = load_run(fname)
+        samples, groups, alg_elapsed = load_run(fname)
+
         win = tk.Toplevel(self)
         win.title(f"Result: {fname}")
         win.geometry('600x450')
@@ -224,14 +269,23 @@ class Application(tk.Tk):
         vsb = ttk.Scrollbar(win, orient='vertical', command=text.yview)
         hsb = ttk.Scrollbar(win, orient='horizontal', command=text.xview)
         text.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        content = f"Samples: {', '.join(samples)}\nNumber of groups: {len(groups)}\nGroups:\n"
-        for g in groups: content += ",".join(g)+"\n"
+
+        content = (
+            f"Samples: {', '.join(samples)}\n"
+            f"Algorithm time: {alg_elapsed:.4f} s\n"
+            f"Number of groups: {len(groups)}\n"
+            "Groups:\n"
+        )
+        for g in groups:
+            content += ",".join(g) + "\n"
+
         text.insert('1.0', content)
         text.configure(state='disabled')
         text.grid(row=0, column=0, sticky='nsew')
         vsb.grid(row=0, column=1, sticky='ns')
         hsb.grid(row=1, column=0, sticky='ew')
-        win.grid_rowconfigure(0, weight=1); win.grid_columnconfigure(0, weight=1)
+        win.grid_rowconfigure(0, weight=1)
+        win.grid_columnconfigure(0, weight=1)
 
     def delete_selected(self):
         sel = self.tree.selection()
