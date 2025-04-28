@@ -25,7 +25,12 @@ def run_solver():
         prob = CoverProblem(n, k, j, s, thresh)
         if method == "exact":
             time_limit = int(data.get("time_limit", 60))
-            chosen = exact_additive(prob, time_limit)
+            # exact_additive 现在返回 (chosen_set, build_time, solve_time)
+            res = exact_additive(prob, time_limit)
+            if isinstance(res, tuple):
+                chosen, build_t, solve_t = res
+            else:
+                chosen = res
         else:
             chosen = greedy_additive(prob)
 
@@ -50,7 +55,9 @@ def run_solver():
     "status": "success",
     "db_name": db_name,
     "selected": samples,
-    "groups": groups
+    "groups": groups,
+    "build_time": build_t,
+    "solve_time": solve_t
 })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
