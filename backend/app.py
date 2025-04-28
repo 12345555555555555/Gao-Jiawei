@@ -42,6 +42,7 @@ def run_solver():
             t0 = time.time()
             chosen = greedy_additive(prob)
             solve_t = time.time() - t0
+            build_t = 0.0 
 
         # 组装输出结果
         groups = []
