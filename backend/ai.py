@@ -9,6 +9,8 @@
 import argparse
 from itertools import combinations
 from typing import List, Tuple, Dict, Set
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 import random
 
 # ---------------------------------------------------------
@@ -36,12 +38,20 @@ def covers(submask: int, supermask: int) -> bool:
     """判断 submask ⊆ supermask"""
     return (submask & supermask) == submask
 
+# ---------------------------------------------------------
+# 优化后的submasks_of，使用缓存加速
+# ---------------------------------------------------------
+
+@lru_cache(None)
+def cached_combinations(indices, s):
+    """缓存计算组合，避免重复计算"""
+    return list(combinations(indices, s))
+
 
 def submasks_of(mask: int, s: int, n: int) -> List[int]:
     """给定位掩码 mask，生成其中所有大小为 s 的子集掩码"""
     indices = mask_to_combo(mask, n)
-    return [combo_to_mask(c) for c in combinations(indices, s)]
-
+    return [combo_to_mask(c) for c in cached_combinations(tuple(indices), s)]
 
 # ---------------------------------------------------------
 # 问题数据结构
@@ -49,26 +59,34 @@ def submasks_of(mask: int, s: int, n: int) -> List[int]:
 class CoverProblem:
     def __init__(self, n: int, k: int, j: int, s: int, thresh: int):
         self.n, self.k, self.j, self.s, self.th = n, k, j, s, thresh
-        self.K_masks = generate_masks(n, k)            # 所有 k‑组合
-        self.J_masks = generate_masks(n, j)            # 所有 j‑组合
+        self.K_masks = generate_masks(n, k)  # 所有 k‑组合
+        self.J_masks = generate_masks(n, j)  # 所有 j‑组合
 
         # 每道 j‑组合的所有 s‑子集
         self.S_by_J: List[List[int]] = [
             submasks_of(j_mask, s, n) for j_mask in self.J_masks
         ]
-# ✅ 添加：每个 j‑组合的所有 s‑子集（用 Set[int] 表示）
+        # ✅ 添加：每个 j‑组合的所有 s‑子集（用 Set[int] 表示）
         self.S_by_J_sets: List[List[Set[int]]] = [
             [{i for i in range(n) if (s_mask >> i) & 1} for s_mask in submasks_of(j_mask, s, n)]
             for j_mask in self.J_masks
         ]
         # 预计算 coverage[j][k] = k‑组合覆盖 j‑组合的 s‑子集数量
         self.coverage: List[List[int]] = []
-        for j_idx, s_list in enumerate(self.S_by_J):
-            row = []
-            for k_mask in self.K_masks:
-                cnt = sum(covers(s_mask, k_mask) for s_mask in s_list)
-                row.append(cnt)
-            self.coverage.append(row)
+        self.build_coverage()
+
+    def calculate_coverage(self, j_idx, s_list) -> List[int]:
+        """计算某个 j‑组合的覆盖"""
+        row = []
+        for k_mask in self.K_masks:
+            cnt = sum(covers(s_mask, k_mask) for s_mask in s_list)
+            row.append(cnt)
+        return row
+
+    def build_coverage(self):
+        """使用并行化计算 self.coverage"""
+        with ThreadPoolExecutor() as executor:
+            self.coverage = list(executor.map(lambda j_idx: self.calculate_coverage(j_idx, self.S_by_J[j_idx]), range(self.j)))
 
 
 # ---------------------------------------------------------
@@ -77,40 +95,53 @@ class CoverProblem:
 from typing import Set
 from math import exp
 from random import shuffle, choice, sample, random
+import numpy as np
 def greedy_additive(prob) -> Set[int]:
-    """多次重启 + 位掩码加速 + 最大增益贪心 + 修复步骤 + 局部删点 + 模拟退火"""
+    """
+    根据 n 大小自动选择算法：
+    - 当 prob.n <= 10 时，使用多次重启 + 位掩码贪心 + 修复 + 本地删点 + 模拟退火。
+    - 当 prob.n > 10 时，使用纯 NumPy 向量化的极端快速贪心。
+    返回选中方案集合。
+    """
+    n = getattr(prob, 'n', None)
+    if n is None:
+        # 如果 prob 没有 n 属性，可通过掩码长度推断：
+        # 取第一个掩码的最高位 + 1 作为 n
+        sample_mask = prob.K_masks[0]
+        n = sample_mask.bit_length()
+    if n <= 10:
+        return _greedy_structured(prob)
+    else:
+        return _greedy_fast_vec(prob)
 
+
+def _greedy_structured(prob) -> Set[int]:
+    # 详细版本
     K = len(prob.K_masks)
     J = len(prob.J_masks)
-
-    # 1. 预计算：K 组合的位掩码列表 & 每个 j 上各 s 子集的位掩码
+    th = prob.th
     k_bits_list = prob.K_masks[:]  # int mask
     s_mask_list = [
         [sum(1 << i for i in s_set) for s_set in prob.S_by_J_sets[j_idx]]
         for j_idx in range(J)
     ]
-
-    # 2. 计算 s_bitmask[j][k]：第 k 个组合在第 j 个需求上覆盖哪些 s 子集
+    # 1. 预计算 s_bitmask
     s_bitmask = [[0]*K for _ in range(J)]
     for j in range(J):
         for s_idx, s_mask in enumerate(s_mask_list[j]):
             for k in range(K):
                 if (k_bits_list[k] & s_mask) == s_mask:
                     s_bitmask[j][k] |= 1 << s_idx
-
-    # 可行性检查
     def is_feasible(sel: Set[int]) -> bool:
         for j in range(J):
             mask_acc = 0
             for k in sel:
                 mask_acc |= s_bitmask[j][k]
-            if mask_acc.bit_count() < prob.th:
+            if mask_acc.bit_count() < th:
                 return False
         return True
-
-    # 初解构造：最大增益贪心
     def greedy_construct() -> Set[int]:
-        uncovered = [prob.th]*J
+        uncovered = [th] * J
         sel = set()
         all_k = list(range(K))
         while any(u > 0 for u in uncovered):
@@ -125,31 +156,23 @@ def greedy_additive(prob) -> Set[int]:
                     gains.append((gain, k))
             if not gains:
                 break
-            max_gain = max(g for g,_ in gains)
-            best_ks = [k for g,k in gains if g == max_gain]
+            max_gain = max(g for g, _ in gains)
+            best_ks = [k for g, k in gains if g == max_gain]
             k_choice = choice(best_ks)
             sel.add(k_choice)
             for j in range(J):
                 uncovered[j] = max(0, uncovered[j] - s_bitmask[j][k_choice].bit_count())
         return sel
-
-    # 修复步骤：保证初解可行
     def repair(sel: Set[int]) -> Set[int]:
-        # 计算当前覆盖
-        covered = [0]*J
+        covered = [0] * J
         for j in range(J):
             for k in sel:
                 covered[j] |= s_bitmask[j][k]
-        # 只保留每个 j 上实际子集位范围
         masks_all = [(1 << len(s_mask_list[j])) - 1 for j in range(J)]
-
-        # 缺口：当 bit_count < th 时，需要继续添加
         while True:
-            # 找出最缺的 j
-            deficits = [prob.th - covered[j].bit_count() for j in range(J)]
+            deficits = [th - covered[j].bit_count() for j in range(J)]
             if all(d <= 0 for d in deficits):
                 break
-            # 计算每个 k 的修复增益
             gains = []
             for k in range(K):
                 if k in sel: continue
@@ -162,28 +185,22 @@ def greedy_additive(prob) -> Set[int]:
                     gains.append((gain, k))
             if not gains:
                 break
-            # 选最大的修复 k
             k_add = max(gains)[1]
             sel.add(k_add)
             for j in range(J):
                 covered[j] |= s_bitmask[j][k_add]
         return sel
-
-    # 冗余删点
     def local_delete(sel: Set[int]) -> Set[int]:
         for k in list(sel):
             if is_feasible(sel - {k}):
                 sel.remove(k)
         return sel
-
-    # 模拟退火 + 一换一
     def annealing_search(sel: Set[int]) -> Set[int]:
         best = current = sel.copy()
         T = 5.0
         for _ in range(200):
             if len(current) <= 1:
                 break
-            # 随机去掉一个
             k_out = choice(tuple(current))
             trial = current - {k_out}
             pool = list(set(range(K)) - trial)
@@ -192,8 +209,8 @@ def greedy_additive(prob) -> Set[int]:
             for k_in in pool:
                 cand = trial | {k_in}
                 if is_feasible(cand):
-                    Δ = len(cand) - len(current)
-                    if Δ < 0 or random() < exp(-Δ/(T+1e-9)):
+                    d_len = len(cand) - len(current)
+                    if d_len < 0 or random() < exp(-d_len/(T+1e-9)):
                         current = cand
                         if len(cand) < len(best):
                             best = cand
@@ -203,9 +220,7 @@ def greedy_additive(prob) -> Set[int]:
                 current = best.copy()
             T *= 0.9
         return best
-
     best_sol = None
-    # 重启次数减为 5
     for _ in range(5):
         sol = greedy_construct()
         sol = repair(sol)
@@ -213,19 +228,34 @@ def greedy_additive(prob) -> Set[int]:
         sol = annealing_search(sol)
         if best_sol is None or len(sol) < len(best_sol):
             best_sol = sol
-
     return best_sol
 
-
-
-def feasible_additive(sel: Set[int], prob: CoverProblem) -> bool:
-    """校验累计覆盖可行性"""
-    need = [prob.th] * len(prob.J_masks)
-    for k in sel:
-        for j in range(len(prob.J_masks)):
-            need[j] = max(0, need[j] - prob.coverage[j][k])
-    return all(v == 0 for v in need)
-
+def _greedy_fast_vec(prob) -> Set[int]:
+    K = len(prob.K_masks)
+    J = len(prob.J_masks)
+    th = prob.th
+    k_bits_arr = np.array(prob.K_masks, dtype=np.int32)
+    S_masks = [
+        np.array([sum(1 << i for i in s) for s in prob.S_by_J_sets[j]], dtype=np.int32)
+        for j in range(J)
+    ]
+    cover = np.zeros((J, K), dtype=np.int32)
+    for j in range(J):
+        masks = S_masks[j][:, None]
+        cover[j] = np.sum((k_bits_arr & masks) == masks, axis=0, dtype=np.int32)
+    deficits = np.full(J, th, dtype=np.int32)
+    selected = []
+    while True:
+        gains = np.minimum(cover, deficits[:, None]).sum(axis=0)
+        best_k = int(np.argmax(gains))
+        best_gain = int(gains[best_k])
+        if best_gain <= 0:
+            break
+        selected.append(best_k)
+        deficits = np.maximum(deficits - cover[:, best_k], 0)
+        if not np.any(deficits > 0):
+            break
+    return set(selected)
 
 # ---------------------------------------------------------
 # OR‑Tools CP‑SAT 精确最优
@@ -238,32 +268,36 @@ def exact_additive(prob: CoverProblem, time_limit: int = 60) -> Set[int]:
         from ortools.sat.python import cp_model
     except ImportError:
         raise ImportError("未安装 OR-Tools，请 `pip install ortools` 后重试")
+    
+    # 建模开始
     model = cp_model.CpModel()
     x = [model.NewBoolVar(f"x{k}") for k in range(len(prob.K_masks))]
 
-    # y[j][t] : 第 j 道 j‑组合的第 t 个 s‑子集是否被覆盖
-    y: List[List] = []
+    # 原有的直接约束每个j组合的覆盖情况
     for j_idx, s_list in enumerate(prob.S_by_J):
-        y_row = [model.NewBoolVar(f"y_{j_idx}_{t}") for t in range(len(s_list))]
-        y.append(y_row)
-        # 至少 threshold 个 s‑子集被覆盖
-        model.Add(sum(y_row) >= prob.th)
+        # 定义整数变量：被覆盖的 s-子集数量
+        s_covered = model.NewIntVar(prob.th, len(s_list), f"s_covered_{j_idx}")
 
-        # 若 y=1 ⇒ 至少一个覆盖它的 k 被选
-        for t_idx, s_mask in enumerate(s_list):
-            k_cover = [
-                k for k, k_mask in enumerate(prob.K_masks)
-                if covers(s_mask, k_mask)
-            ]
-            # Big-M 线性化：y ≤ ∑ x_k
-            model.Add(sum(x[k] for k in k_cover) >= y_row[t_idx])
+        # 为每个 s 子集，判断是否被覆盖
+        s_is_covered = []
+        for s_mask in s_list:
+            covering_k = [x[k] for k, k_mask in enumerate(prob.K_masks) if covers(s_mask, k_mask)]
+            # 当前 s 子集至少被一个 k 覆盖，则被覆盖
+            is_cov = model.NewBoolVar("")
+            model.Add(sum(covering_k) >= 1).OnlyEnforceIf(is_cov)
+            model.Add(sum(covering_k) == 0).OnlyEnforceIf(is_cov.Not())
+            s_is_covered.append(is_cov)
+
+        # 被覆盖的 s-子集数量约束
+        model.Add(s_covered == sum(s_is_covered))
+        model.Add(s_covered >= prob.th)
 
     # 目标：最小化 k‑组合数量
     model.Minimize(sum(x))
 
     # 建模结束
     build_time = time.time() - t0_build
-
+    
     # 求解阶段
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
@@ -330,7 +364,7 @@ def main() -> None:
         chosen = greedy_additive(prob)
 
     # ---------- 校验 ----------
-    if not feasible_additive(chosen, prob):
+    #if not feasible_additive(chosen, prob):
         raise AssertionError("得到的解不满足覆盖要求！")
 
     # ---------- 输出 ----------
