@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # combo_cover_final.py
 # ---------------------------------------------------------
-# 解决 (n, k, j, s, threshold) 组合覆盖最小化问题
-#  - 累计覆盖模型：每道 j‑组合需有 ≥ threshold 个 s‑子集被至少 1 组选中 k‑组合覆盖
-#  - 支持贪心近似 (--greedy) 与 CP‑SAT 精确最优 (--exact)
+# Solve the (n, k, j, s, threshold) combination cover minimization problem
+#  - Additive coverage model: each j-combination must be covered by ≥ threshold s-subsets,
+#    each of which is covered by at least one selected k-combination
+#  - Supports greedy approximation (--greedy) and CP-SAT exact optimization (--exact)
 # ---------------------------------------------------------
 
 import argparse
@@ -14,10 +15,10 @@ from concurrent.futures import ThreadPoolExecutor
 import random
 
 # ---------------------------------------------------------
-# 位掩码工具函数
+# Bitmask Tool Functions
 # ---------------------------------------------------------
 def combo_to_mask(combo: Tuple[int, ...]) -> int:
-    """元组 → 位掩码"""
+    """Tuple → Bitmask"""
     m = 0
     for i in combo:
         m |= 1 << i
@@ -25,58 +26,59 @@ def combo_to_mask(combo: Tuple[int, ...]) -> int:
 
 
 def mask_to_combo(mask: int, n: int) -> Tuple[int, ...]:
-    """位掩码 → 元组 (升序)"""
+    """Bitmask → Tuple (in ascending order)"""
     return tuple(i for i in range(n) if mask & (1 << i))
 
 
 def generate_masks(n: int, r: int) -> List[int]:
-    """返回 nCr 个 r‑子集的掩码列表"""
+    """Return a list of nCr bitmasks for r-sized subsets"""
     return [combo_to_mask(c) for c in combinations(range(n), r)]
 
 
 def covers(submask: int, supermask: int) -> bool:
-    """判断 submask ⊆ supermask"""
+    """Check if submask ⊆ supermask"""
     return (submask & supermask) == submask
 
+
 # ---------------------------------------------------------
-# 优化后的submasks_of，使用缓存加速
+# Optimized submasks_of with caching for acceleration
 # ---------------------------------------------------------
 
 @lru_cache(None)
 def cached_combinations(indices, s):
-    """缓存计算组合，避免重复计算"""
+    """Cache the computed combinations to avoid redundant calculation"""
     return list(combinations(indices, s))
 
 
 def submasks_of(mask: int, s: int, n: int) -> List[int]:
-    """给定位掩码 mask，生成其中所有大小为 s 的子集掩码"""
+    """Given a bitmask, generate all s-subset bitmasks contained in it"""
     indices = mask_to_combo(mask, n)
     return [combo_to_mask(c) for c in cached_combinations(tuple(indices), s)]
 
 # ---------------------------------------------------------
-# 问题数据结构
+# Problem data structure
 # ---------------------------------------------------------
 class CoverProblem:
     def __init__(self, n: int, k: int, j: int, s: int, thresh: int):
         self.n, self.k, self.j, self.s, self.th = n, k, j, s, thresh
-        self.K_masks = generate_masks(n, k)  # 所有 k‑组合
-        self.J_masks = generate_masks(n, j)  # 所有 j‑组合
+        self.K_masks = generate_masks(n, k)  # All k-combinations
+        self.J_masks = generate_masks(n, j)  # All j-combinations
 
-        # 每道 j‑组合的所有 s‑子集
+        # For each j-combination, generate all s-subsets
         self.S_by_J: List[List[int]] = [
             submasks_of(j_mask, s, n) for j_mask in self.J_masks
         ]
-        # ✅ 添加：每个 j‑组合的所有 s‑子集（用 Set[int] 表示）
+        # ✅ Also store all s-subsets for each j-combination (as Set[int])
         self.S_by_J_sets: List[List[Set[int]]] = [
             [{i for i in range(n) if (s_mask >> i) & 1} for s_mask in submasks_of(j_mask, s, n)]
             for j_mask in self.J_masks
         ]
-        # 预计算 coverage[j][k] = k‑组合覆盖 j‑组合的 s‑子集数量
+        # Precompute coverage[j][k] = number of s-subsets in j covered by k-combination
         self.coverage: List[List[int]] = []
         self.build_coverage()
 
     def calculate_coverage(self, j_idx, s_list) -> List[int]:
-        """计算某个 j‑组合的覆盖"""
+        """Compute the coverage row for a given j-combination"""
         row = []
         for k_mask in self.K_masks:
             cnt = sum(covers(s_mask, k_mask) for s_mask in s_list)
@@ -84,29 +86,30 @@ class CoverProblem:
         return row
 
     def build_coverage(self):
-        """使用并行化计算 self.coverage"""
+        """Compute self.coverage in parallel"""
         with ThreadPoolExecutor() as executor:
             self.coverage = list(executor.map(lambda j_idx: self.calculate_coverage(j_idx, self.S_by_J[j_idx]), range(self.j)))
 
 
 # ---------------------------------------------------------
-# 贪心近似：log-factor guarantee
+# Greedy approximation: log-factor guarantee
 # ---------------------------------------------------------
 from typing import Set
 from math import exp
 from random import shuffle, choice, sample, random
 import numpy as np
+
 def greedy_additive(prob) -> Set[int]:
     """
-    根据 n 大小自动选择算法：
-    - 当 prob.n <= 10 时，使用多次重启 + 位掩码贪心 + 修复 + 本地删点 + 模拟退火。
-    - 当 prob.n > 10 时，使用纯 NumPy 向量化的极端快速贪心。
-    返回选中方案集合。
+    Automatically choose algorithm based on n:
+    - If prob.n <= 10: use multi-restart + bitmask greedy + repair + local deletion + simulated annealing
+    - If prob.n > 10: use extremely fast NumPy-based greedy vectorized method
+    Returns the set of selected solutions.
     """
     n = getattr(prob, 'n', None)
     if n is None:
-        # 如果 prob 没有 n 属性，可通过掩码长度推断：
-        # 取第一个掩码的最高位 + 1 作为 n
+        # If prob has no 'n' attribute, infer it from the bit length of the first mask
+        # Use the highest bit index + 1 as n
         sample_mask = prob.K_masks[0]
         n = sample_mask.bit_length()
     if n <= 10:
@@ -116,7 +119,7 @@ def greedy_additive(prob) -> Set[int]:
 
 
 def _greedy_structured(prob) -> Set[int]:
-    # 详细版本
+    # Detailed version
     K = len(prob.K_masks)
     J = len(prob.J_masks)
     th = prob.th
@@ -125,7 +128,7 @@ def _greedy_structured(prob) -> Set[int]:
         [sum(1 << i for i in s_set) for s_set in prob.S_by_J_sets[j_idx]]
         for j_idx in range(J)
     ]
-    # 1. 预计算 s_bitmask
+    # 1. Precompute s_bitmask
     s_bitmask = [[0]*K for _ in range(J)]
     for j in range(J):
         for s_idx, s_mask in enumerate(s_mask_list[j]):
@@ -258,75 +261,74 @@ def _greedy_fast_vec(prob) -> Set[int]:
     return set(selected)
 
 # ---------------------------------------------------------
-# OR‑Tools CP‑SAT 精确最优
+# OR-Tools CP-SAT Exact Optimization
 # ---------------------------------------------------------
 def exact_additive(prob: CoverProblem, time_limit: int = 60) -> Set[int]:
-    # ------------------ 新增：计时导入和建模 ------------------
+    # ------------------ Timing: import and model building ------------------
     import time
     t0_build = time.time()
     try:
         from ortools.sat.python import cp_model
     except ImportError:
-        raise ImportError("未安装 OR-Tools，请 `pip install ortools` 后重试")
+        raise ImportError("OR-Tools not installed. Please `pip install ortools` to continue")
     
-    # 建模开始
+    # Start model building
     model = cp_model.CpModel()
     x = [model.NewBoolVar(f"x{k}") for k in range(len(prob.K_masks))]
 
-    # 原有的直接约束每个j组合的覆盖情况
+    # Add constraints for each j-combination's coverage
     for j_idx, s_list in enumerate(prob.S_by_J):
-        # 定义整数变量：被覆盖的 s-子集数量
+        # Define integer variable: number of covered s-subsets
         s_covered = model.NewIntVar(prob.th, len(s_list), f"s_covered_{j_idx}")
 
-        # 为每个 s 子集，判断是否被覆盖
+        # Determine whether each s-subset is covered
         s_is_covered = []
         for s_mask in s_list:
             covering_k = [x[k] for k, k_mask in enumerate(prob.K_masks) if covers(s_mask, k_mask)]
-            # 当前 s 子集至少被一个 k 覆盖，则被覆盖
+            # An s-subset is covered if at least one k-combination covers it
             is_cov = model.NewBoolVar("")
             model.Add(sum(covering_k) >= 1).OnlyEnforceIf(is_cov)
             model.Add(sum(covering_k) == 0).OnlyEnforceIf(is_cov.Not())
             s_is_covered.append(is_cov)
 
-        # 被覆盖的 s-子集数量约束
+        # Constraint on number of covered s-subsets
         model.Add(s_covered == sum(s_is_covered))
         model.Add(s_covered >= prob.th)
 
-    # 目标：最小化 k‑组合数量
+    # Objective: minimize the number of selected k-combinations
     model.Minimize(sum(x))
 
-    # 建模结束
+    # End of model building
     build_time = time.time() - t0_build
     
-    # 求解阶段
+    # Solving phase
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
     t0_solve = time.time()
     status = solver.Solve(model)
     solve_time = time.time() - t0_solve
 
-    # 状态提示（可选）
+    # Status feedback (optional)
     if status == cp_model.FEASIBLE:
         print("⚠️ Exact: time limit reached, returning best feasible solution")
     elif status == cp_model.OPTIMAL:
         print("✅ Exact: optimal found")
     elif status == cp_model.UNKNOWN:
-        # 超时且未找到任何可行解
+        # Timeout and no feasible solution found
         print("❌ Exact: time limit reached, no feasible solution found")
-        # 直接返回空解
         return set(), build_time, solve_time
     else:
-        # INFEASIBLE 之类的其他异常状态
+        # Other abnormal states (e.g., INFEASIBLE)
         raise RuntimeError(f"CP-SAT failed with status {solver.StatusName(status)}")
  
     chosen = {k for k in range(len(prob.K_masks)) if solver.Value(x[k])}
-    # 返回 (组合索引集合, 建模耗时, 求解耗时)
+    # Return: selected combination indices, build time, and solve time
     return chosen, build_time, solve_time
 
 
 
 # ---------------------------------------------------------
-# 字母输出工具
+# Alphabet output utility
 # ---------------------------------------------------------
 ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 def idx2letter(idx: int) -> str:
@@ -338,7 +340,7 @@ def mask2letters(mask: int, n: int) -> Tuple[str, ...]:
 
 
 # ---------------------------------------------------------
-# 主程序
+# Main function
 # ---------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser(description="Combination Cover Solver (additive model)")
@@ -348,26 +350,26 @@ def main() -> None:
     p("--j", type=int, required=True)
     p("--s", type=int, required=True)
     p("--threshold", type=int, default=1,
-      help="每道 j‑组合至少需要覆盖的 s‑子集数量")
-    p("--exact", action="store_true", help="使用 OR‑Tools 求全局最优")
-    p("--time", type=int, default=60, help="CP‑SAT 最大求解秒数")
-    p("--seed", type=int, default=0, help="贪心局部搜索随机种子")
+      help="Each j-combination must be covered by at least this many s-subsets")
+    p("--exact", action="store_true", help="Use OR-Tools to find global optimum")
+    p("--time", type=int, default=60, help="Max solve time for CP-SAT")
+    p("--seed", type=int, default=0, help="Random seed for greedy local search")
     args = parser.parse_args()
 
     random.seed(args.seed)
     prob = CoverProblem(args.n, args.k, args.j, args.s, args.threshold)
 
-    # ---------- 求解 ----------
+    # ---------- Solve ----------
     if args.exact:
         chosen = exact_additive(prob, args.time)
     else:
         chosen = greedy_additive(prob)
 
-    # ---------- 校验 ----------
-    #if not feasible_additive(chosen, prob):
-        raise AssertionError("得到的解不满足覆盖要求！")
+    # ---------- Verification ----------
+    # if not feasible_additive(chosen, prob):
+        raise AssertionError("The solution does not satisfy coverage constraints!")
 
-    # ---------- 输出 ----------
+    # ---------- Output ----------
     print(f"#Selected = {len(chosen)}\n")
     for k in sorted(chosen):
         print(mask2letters(prob.K_masks[k], prob.n))

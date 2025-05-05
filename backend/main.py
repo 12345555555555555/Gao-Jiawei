@@ -23,13 +23,13 @@ def save_run(params, samples, groups, alg_elapsed):
     path = os.path.join(DB_DIR, db_name)
     conn = sqlite3.connect(path)
     c = conn.cursor()
-    # metadata: samples 和 alg_elapsed
+    # metadata: store samples and alg_elapsed
     c.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)")
     c.execute("INSERT OR REPLACE INTO metadata VALUES (?,?)",
               ('samples', ",".join(str(x) for x in samples)))
     c.execute("INSERT OR REPLACE INTO metadata VALUES (?,?)",
               ('alg_elapsed', f"{alg_elapsed:.4f}"))
-    # results 表
+    # results table
     c.execute("CREATE TABLE IF NOT EXISTS results (group_id INTEGER, samples TEXT)")
     for gid, grp in enumerate(groups, start=1):
         c.execute("INSERT INTO results VALUES (?,?)", (gid, ",".join(grp)))
@@ -46,13 +46,13 @@ def load_run(db_name):
     path = os.path.join(DB_DIR, db_name)
     conn = sqlite3.connect(path)
     c = conn.cursor()
-    # 取 samples
+    # Get samples
     c.execute("SELECT value FROM metadata WHERE key='samples'")
     samples = c.fetchone()[0].split(',')
-    # 取算法运行时间
+    # Get algorithm runtime
     c.execute("SELECT value FROM metadata WHERE key='alg_elapsed'")
     alg_elapsed = float(c.fetchone()[0])
-    # 取结果组
+    # Get grouped results
     c.execute("SELECT samples FROM results ORDER BY group_id")
     rows = c.fetchall()
     conn.close()
@@ -185,25 +185,25 @@ class Application(tk.Tk):
         prob = CoverProblem(n, k, j, s, thresh)
         method = self.var_method.get()
 
-        # —— 精确算法：分别计时 build & solve —— 
+                # —— Exact algorithm: separately measure build & solve time ——
         if method == 'exact':
             time_limit = int(self.time_ent.get())
             try:
-                # exact_additive 现在返回 (chosen_set, build_time, solve_time)
+                # exact_additive now returns (chosen_set, build_time, solve_time)
                 chosen, build_t, solve_t = exact_additive(prob, time_limit)
             except Exception as e:
                 self.after(0, lambda: messagebox.showerror("Solver Error", str(e)))
                 self.after(0, self._end_progress)
                 return
 
-            # 如果搜索阶段 hit time limit，则弹窗警告
+            # If search stage hits time limit, show warning popup
             if solve_t >= time_limit:
                 self.after(0, lambda: messagebox.showwarning(
                     "Timeout",
                     f"Exact search reached time limit {time_limit}s, returning best feasible solution."
                 ))
         else:
-            # 贪心算法：build time 视为 0，只测 solve time
+            # Greedy algorithm: build time is treated as 0, only measure solve time
             build_t = 0.0
             solve_start = time.time()
             try:
@@ -223,7 +223,7 @@ class Application(tk.Tk):
             nums = tuple(f"{samples[i]:02d}" for i in combo)
             groups.append(nums)
 
-        # Save run：传入 solve_t 作为“算法耗时”
+        # Save run: pass solve_t as "algorithm time"
         key = (m, n, k, j, s, method, thresh)
         self.run_counter[key] = self.run_counter.get(key, 0) + 1
         db_name = save_run(
@@ -232,7 +232,7 @@ class Application(tk.Tk):
             solve_t
         )
 
-        # UI 更新：同时显示 Model / Algo / Total 时间
+        # UI update: display Model / Algo / Total time
         def finish():
             self.time_label.config(
                 text=(

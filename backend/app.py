@@ -24,34 +24,34 @@ def run_solver():
         )
         prob = CoverProblem(n, k, j, s, thresh)
 
-        # —— 统一初始化 build_t 和 solve_t —— 
+        # —— Initialize build_t and solve_t for both branches ——
         build_t = 0.0
         solve_t = 0.0
 
         if method == "exact":
-            # Exact 分支：exact_additive 返回 (chosen_set, build_time, solve_time)
+            # Exact branch: exact_additive returns (chosen_set, build_time, solve_time)
             time_limit = int(data.get("time_limit", 60))
             res = exact_additive(prob, time_limit)
             if isinstance(res, tuple):
                 chosen, build_t, solve_t = res
             else:
-                # 如果老版本只返回集合，就认为 build/solve 都是 0
+                # If older version only returns the set, assume both times are zero
                 chosen = res
         else:
-            # Greedy 分支：我们手动计时 solve 阶段
+            # Greedy branch: manually measure the solve phase time
             t0 = time.time()
             chosen = greedy_additive(prob)
             solve_t = time.time() - t0
             build_t = 0.0 
 
-        # 组装输出结果
+        # Assemble result groups
         groups = []
         for idx in sorted(chosen):
             mask = prob.K_masks[idx]
             combo = tuple(f"{samples[i]:02d}" for i in mask_to_combo(mask, n))
             groups.append(combo)
 
-        # 保存到 SQLite
+        # Save to SQLite
         db_name = f"{m}-{n}-{k}-{j}-{s}-{thresh}-{method}-{random.randint(1000,9999)}-{len(groups)}.db"
         db_path = os.path.join(DB_DIR, db_name)
         conn = sqlite3.connect(db_path)
@@ -62,7 +62,7 @@ def run_solver():
         conn.commit()
         conn.close()
 
-        # 返回 JSON 给前端
+        # Return result JSON to frontend
         return jsonify({
             "status":    "success",
             "db_name":   db_name,
