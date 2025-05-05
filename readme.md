@@ -7,7 +7,6 @@
   </strong>
   <br><br>
 </div>
----
 
 ## 1. About
 
